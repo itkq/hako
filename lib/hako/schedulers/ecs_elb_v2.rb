@@ -18,9 +18,10 @@ module Hako
         @dry_run = dry_run
       end
 
-      # @param [Aws::ECS::Types::LoadBalancer] ecs_lb
+      # @param [Array<Aws::ECS::Types::LoadBalancer>] ecs_lbs
       # @return [nil]
-      def show_status(ecs_lb)
+      def show_status(ecs_lbs)
+        ecs_lb = ecs_lbs[0]
         lb = describe_load_balancer
         elb_client.describe_listeners(load_balancer_arn: lb.load_balancer_arn).each do |page|
           page.listeners.each do |listener|
@@ -262,13 +263,15 @@ module Hako
         @elb_v2_config.key?('target_group_name')
       end
 
-      # @return [Hash]
+      # @return [Array<Hash>]
       def load_balancer_params_for_service
-        {
-          target_group_arn: describe_target_group.target_group_arn,
-          container_name: @elb_v2_config.fetch('container_name', 'front'),
-          container_port: @elb_v2_config.fetch('container_port', 80),
-        }
+        [
+          {
+            target_group_arn: describe_target_group.target_group_arn,
+            container_name: @elb_v2_config.fetch('container_name', 'front'),
+            container_port: @elb_v2_config.fetch('container_port', 80),
+          }
+        ]
       end
 
       private
