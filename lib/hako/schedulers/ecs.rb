@@ -13,6 +13,7 @@ require 'hako/schedulers/ecs_autoscaling'
 require 'hako/schedulers/ecs_definition_comparator'
 require 'hako/schedulers/ecs_elb'
 require 'hako/schedulers/ecs_elb_v2'
+require 'hako/schedulers/ecs_multiple_elb_v2'
 require 'hako/schedulers/ecs_service_comparator'
 require 'hako/schedulers/ecs_service_discovery'
 require 'hako/schedulers/ecs_volume_comparator'
@@ -39,6 +40,13 @@ module Hako
         @ecs_elb_v2_options = options.fetch('elb_v2', nil)
         if @ecs_elb_options && @ecs_elb_v2_options
           validation_error!('Cannot specify both elb and elb_v2')
+        end
+        @ecs_multiple_elb_v2_options = options.fetch('multiple_elb_v2', nil)
+        if @ecs_elb_options && @ecs_multiple_elb_v2_options
+          validation_error!('Cannot specify both elb and multiple_elb_v2')
+        end
+        if @ecs_elb_v2_options && @ecs_multiple_elb_v2_options
+          validation_error!('Cannot specify both elb_v2 and multiple_elb_v2')
         end
         @network_mode = options.fetch('network_mode', nil)
         if @network_mode == 'awsvpc' && @ecs_elb_v2_options
@@ -395,6 +403,8 @@ module Hako
         @ecs_elb_client ||=
           if @ecs_elb_options
             EcsElb.new(@app_id, @region, @ecs_elb_options, dry_run: @dry_run)
+          elsif @ecs_multiple_elb_v2_options
+            EcsMultipleElbV2.new(@app_id, @region, @ecs_multiple_elb_v2_options, dry_run: @dry_run)
           else
             EcsElbV2.new(@app_id, @region, @ecs_elb_v2_options, dry_run: @dry_run)
           end

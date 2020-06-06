@@ -636,5 +636,108 @@ RSpec.describe Hako::Schedulers::Ecs do
         end
       end
     end
+
+    context 'with multiple ELBv2' do
+      let(:app) { Hako::Application.new(fixture_root.join('jsonnet', 'ecs-multiple-elbv2.jsonnet')) }
+      let(:task_definition_arn) { "arn:aws:ecs:ap-northeast-1:012345678901:task-definition/#{app.id}:1" }
+      let(:elb_v2_client) { double('Aws::ElasticLoadBalancingV2::Client') }
+      let(:public_load_balancer_arn) { 'arn:aws:elasticloadbalancing:ap-northeast-1:012345678901:loadbalancer/app/public/0123456789abcdef' }
+      let(:internal_load_balancer_arn) { 'arn:aws:elasticloadbalancing:ap-northeast-1:012345678901:loadbalancer/app/internal/0123456789abcdef' }
+      let(:public_target_group_arn) { 'arn:aws:elasticloadbalancing:ap-northeast-1:012345678901:targetgroup/public/0123456789abcdef' }
+      let(:internal_target_group_arn) { 'arn:aws:elasticloadbalancing:ap-northeast-1:012345678901:targetgroup/internal/0123456789abcdef' }
+
+      before do
+        allow(ecs_client).to receive(:describe_services).with(cluster: 'eagletmt', services: [app.id]).and_return(Aws::ECS::Types::DescribeServicesResponse.new(failures: [], services: [])).once
+        allow(ecs_client).to receive(:describe_task_definition).with(task_definition: app.id).and_raise(Aws::ECS::Errors::ClientException.new(nil, 'Unable to describe task definition')).once
+        allow(ecs_client).to receive(:list_tags_for_resource).with(resource_arn: task_definition_arn).and_return(Aws::ECS::Types::ListTagsForResourceResponse.new(tags: [])).once
+
+        allow(Aws::ElasticLoadBalancingV2::Client).to receive(:new).and_return(elb_v2_client)
+        @created_load_balancer = nil
+        allow(elb_v2_client).to receive(:describe_load_balancers).with(names: ['public']) {
+          Aws::ElasticLoadBalancingV2::Types::DescribeLoadBalancersOutput.new(load_balancers: [
+            Aws::ElasticLoadBalancingV2::Types::LoadBalancer.new(
+              load_balancer_arn: public_load_balancer_arn,
+              dns_name: 'public-012345678.ap-northeast-1.elb.amazonaws.com',
+              availability_zones: [
+                Aws::ElasticLoadBalancingV2::Types::AvailabilityZone.new(subnet_id: 'subnet-11111111'),
+                Aws::ElasticLoadBalancingV2::Types::AvailabilityZone.new(subnet_id: 'subnet-22222222'),
+              ],
+            ),
+          ])
+        }
+        allow(elb_v2_client).to receive(:describe_load_balancers).with(names: ['internal']) {
+          Aws::ElasticLoadBalancingV2::Types::DescribeLoadBalancersOutput.new(load_balancers: [
+            Aws::ElasticLoadBalancingV2::Types::LoadBalancer.new(
+              load_balancer_arn: internal_load_balancer_arn,
+              dns_name: 'internal-012345678.ap-northeast-1.elb.amazonaws.com',
+              availability_zones: [
+                Aws::ElasticLoadBalancingV2::Types::AvailabilityZone.new(subnet_id: 'subnet-33333333'),
+                Aws::ElasticLoadBalancingV2::Types::AvailabilityZone.new(subnet_id: 'subnet-44444444'),
+              ],
+            ),
+          ])
+        }
+        allow(elb_v2_client).to receive(:describe_target_groups).with(names: ['public']) {
+          Aws::ElasticLoadBalancingV2::Types::DescribeTargetGroupsOutput.new(target_groups: [
+            Aws::ElasticLoadBalancingV2::Types::TargetGroup.new(target_group_arn: public_target_group_arn),
+          ])
+        }
+        allow(elb_v2_client).to receive(:describe_target_groups).with(names: ['internal']) {
+          Aws::ElasticLoadBalancingV2::Types::DescribeTargetGroupsOutput.new(target_groups: [
+            Aws::ElasticLoadBalancingV2::Types::TargetGroup.new(target_group_arn: internal_target_group_arn),
+          ])
+        }
+        allow(elb_v2_client).to receive(:describe_listeners).with(load_balancer_arn: public_load_balancer_arn) {
+          Aws::ElasticLoadBalancingV2::Types::DescribeListenersOutput.new(listeners: listeners).extend(Aws::PageableResponse).tap do |output|
+            output.pager = double('Aws::Pager', truncated?: false)
+          end
+        }
+      end
+      it 'creates new service' do
+        expect(ecs_client).to receive(:register_task_definition).with(register_task_definition_params).and_return(Aws::ECS::Types::RegisterTaskDefinitionResponse.new(
+          task_definition: Aws::ECS::Types::TaskDefinition.new(
+            task_definition_arn: task_definition_arn,
+          ),
+        )).once
+        expect(ecs_client).to receive(:create_service).with(create_service_params.merge(
+          task_definition: task_definition_arn,
+          health_check_grace_period_seconds: nil,
+          load_balancers: [
+            {
+              target_group_arn: public_target_group_arn,
+              container_name: 'front',
+              container_port: 80,
+            },
+            {
+              target_group_arn: internal_target_group_arn,
+              container_name: 'front',
+              container_port: 80,
+            },
+          ],
+        )).and_return(Aws::ECS::Types::CreateServiceResponse.new(
+          service: Aws::ECS::Types::Service.new(
+            placement_constraints: [],
+            placement_strategy: [],
+            service_registries: [],
+          ),
+        )).once
+        expect(ecs_client).to receive(:update_service).with(update_service_params.merge(
+          task_definition: task_definition_arn,
+          health_check_grace_period_seconds: nil,
+        )).and_return(Aws::ECS::Types::UpdateServiceResponse.new(
+          service: Aws::ECS::Types::Service.new(
+            cluster_arn: cluster_arn,
+            service_arn: service_arn,
+            events: [],
+          ),
+        )).once
+        expect(ecs_client).to receive(:describe_services).with(cluster: cluster_arn, services: [service_arn]).and_return(Aws::ECS::Types::DescribeServicesResponse.new(failures: [], services: [dummy_service_response])).once
+
+        scheduler.deploy(containers)
+        expect(logger_io.string).to include('Registered task definition')
+        expect(logger_io.string).to include('Updated service')
+        expect(logger_io.string).to include('Deployment completed')
+      end
+    end
   end
 end
